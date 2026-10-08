@@ -1,99 +1,85 @@
-name: Reusable CI Pipeline
-on: 
- workflow_call:
-  inputs:
-   node-versiond:
-    requiered: false
-    type: string
-    default: '["18", "20", "22"]'
+name: CD & Deployment Pipeline
 
-  run-lint:
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Entorno de despliegue manual'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
 
-    required: false
+# Evita ejecuciones simultáneas del mismo grupo
+concurrency:
+  group: deployment-${{ github.ref }}
+  cancel-in-progress: false
 
-     type: bolean
+# Permisos mínimos requeridos para OIDC
+permissions:
+  id-token: write
+  contents: read
 
-     default: true
+jobs:
+  quality-gate:
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      node-versions: '["20", "22"]'
+      run-lint: true
 
-  outputs:
-
-
-   build-status:
-    description:  "Resultado de la construccion"
-         value: ${{jobs.build.outputs.status}}
-
-
-    jobs: 
-      test-matrix:
-       name: Test Node.js v${{matrix.node}}
-       runs-on: ubuntu-latest
-       strategy
-
-       fail-fast: false 
-
-    matrix:
-     node: ${{fromJson(inputs.node-versions)}} 
+  deploy-staging:
+    name: Deploy to Staging
+    needs: quality-gate
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.example.com
 
     steps:
-      - name: Checkout del codigo 
-       uses: actions/checkout@v4
-      - name: Configurar Node.js v${{matrix.node}}
-    con cache
+      - name: Descargar Artifact de compilación
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: dist/
 
-       uses: actions/setup-node@v4
+      - name: Autenticación OIDC con AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsStagingRole
+          aws-region: us-east-1
 
-       with:
-        node-version: ${{matrix.node}}
-        cache: 'npm' 
-     - name: Instalacion limpia de dependencias
-       run: npm CI
-     - name: Ejecutar Linter
-      if: ${{inputs.run-lint}}
-    run:npm run lint
-    - name: Ejecutar pruebas unitarias e integracion 
-     run: npm test -- --coverage
-    - name: Subir reporte de cobertura 
-     uses: actions/upload-artifact@v4
-  with:
-    name: coverage-node-${{matrix.node}} 
-    path: coverage/
-    retention-days:7
+      - name: Desplegar en Staging
+        run: |
+          echo "Desplegando en Staging..."
+          # aws s3 sync dist/ s3://staging-app-bucket/
 
+  deploy-production:
+    name: Deploy to Production
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://example.com
 
-    build:
-      name: Build & Package
-      needs: test-matrix
-      runs-on: ubuntu-latest
-      outputs:
+    steps:
+      - name: Descargar Artifact de compilación
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: dist/
 
-      status: ${{steps.set-outputs.status}}
-      steps:
-       -name: Checkout del codigo
-       uses: actions/checkout@v4
+      - name: Autenticación OIDC con AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsProductionRole
+          aws-region: us-east-1
 
-      -name: Configurar Node.js
-       uses: actions/setup-node@v4
-      with: 
-       node-version: '20'
-       cache: 'npm' 
-      -name: Instalar y Compilar 
-
-      run:
-
-       npm ci 
-
-       npm run build
-
-    - name: Guardar Artifact de produccion 
-
-     uses: actions/upload-artifact@v4
-
-     with: 
-
-      name: build-artifact
-      path: dist/
-      retention-days:1
-
-      -id: set-output 
-      run: echo "status=success">>$GITHUB_OUTPUT
-
+      - name: Despliegue en Producción
+        run: |
+          echo "Ejecutando despliegue Zero-Downtime en Producción..."
